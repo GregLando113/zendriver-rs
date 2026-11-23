@@ -2477,6 +2477,23 @@ impl TargetObserver for ChildTargetAutoAttach {
     }
 }
 
+/// Resolve a profile's *auto* viewport emulation against the launch mode.
+///
+/// [`StealthProfile::emulate_viewport`] left unset means auto: a headless
+/// launch keeps the pinned `Emulation.setDeviceMetricsOverride` viewport
+/// (hiding headless Chrome's odd default window), while a headful launch
+/// turns it off so the page lays out at the real OS window size. A pinned
+/// 1920x1080 viewport inside a smaller window — routine under a tiling
+/// window manager — renders past the window's edge. An explicit setting
+/// always wins.
+fn resolve_viewport_emulation(profile: StealthProfile, headless: bool) -> StealthProfile {
+    match profile.viewport_emulation() {
+        Some(_) => profile,
+        None if headless => profile,
+        None => profile.emulate_viewport(false),
+    }
+}
+
 /// Assemble the canonical observer chain: [`ChildTargetAutoAttach`] first,
 /// then an optional stealth observer, then every user-supplied observer
 /// (registration order preserved), then the opt-in force-open-shadow-roots
@@ -3489,6 +3506,7 @@ impl BrowserBuilder {
                     Some(backend) => profile.clone().gpu_backend(backend),
                     None => profile.clone(),
                 };
+                let profile = resolve_viewport_emulation(profile, self.headless.unwrap_or(true));
                 let fp = profile.resolve_fingerprint(&exe)?;
                 let obs: Arc<dyn TargetObserver> = Arc::new(StealthObserver::with_persona(
                     profile.clone(),
@@ -6068,6 +6086,35 @@ mod tests {
         };
         assert!(has(BrowserBuilder::new()));
         assert!(!has(BrowserBuilder::new().headless(false)));
+    }
+
+    #[test]
+    fn viewport_emulation_auto_resolves_off_only_for_headful() {
+        let auto = StealthProfile::native();
+        assert_eq!(
+            resolve_viewport_emulation(auto.clone(), true).viewport_emulation(),
+            None,
+            "headless keeps auto, which the observer treats as on"
+        );
+        assert_eq!(
+            resolve_viewport_emulation(auto, false).viewport_emulation(),
+            Some(false),
+            "headful resolves auto to off so the page fits the real window"
+        );
+    }
+
+    #[test]
+    fn viewport_emulation_explicit_setting_wins_over_launch_mode() {
+        let pinned = StealthProfile::native().emulate_viewport(true);
+        assert_eq!(
+            resolve_viewport_emulation(pinned, false).viewport_emulation(),
+            Some(true)
+        );
+        let off = StealthProfile::native().emulate_viewport(false);
+        assert_eq!(
+            resolve_viewport_emulation(off, true).viewport_emulation(),
+            Some(false)
+        );
     }
 
     #[test]

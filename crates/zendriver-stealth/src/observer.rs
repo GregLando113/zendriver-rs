@@ -11,7 +11,7 @@
 use serde_json::json;
 use zendriver_transport::{CallError, ObserverError, PausedSession, TargetObserver};
 
-use crate::patches::{bootstrap_script, bootstrap_script_native_webgl, geometry_bootstrap_with};
+use crate::patches::{bootstrap_script_for, geometry_bootstrap_with};
 use crate::persona::GeoPos;
 use crate::persona::specs::UaMetadata;
 use crate::{Fingerprint, Persona, ProfileKind, StealthProfile};
@@ -76,14 +76,14 @@ impl StealthObserver {
     ) -> Self {
         fingerprint.overlay_persona(&persona);
 
+        let emulate_viewport = profile.viewport_emulation_enabled();
         let bootstrap = match profile.kind() {
-            ProfileKind::Spoofed => {
-                if profile.native_webgl_enabled() {
-                    bootstrap_script_native_webgl(&persona, &fingerprint)
-                } else {
-                    bootstrap_script(&persona, &fingerprint)
-                }
-            }
+            ProfileKind::Spoofed => bootstrap_script_for(
+                &persona,
+                &fingerprint,
+                !profile.native_webgl_enabled(),
+                emulate_viewport,
+            ),
             // `Native` gets the geometry repair and nothing else. It still receives
             // `Emulation.setDeviceMetricsOverride` below, which sets `inner*` and
             // `screen.width`/`height` but cannot reach `outer*`/`avail*` — leaving
@@ -99,7 +99,14 @@ impl StealthObserver {
             // merged `fingerprint.screen` so the JS geometry and the CDP metrics
             // override below describe the same display — a screen that reached
             // one but not the other is worse than one that reached neither.
-            ProfileKind::Native => geometry_bootstrap_with(fingerprint.screen.as_ref()),
+            //
+            // With viewport emulation off (headful) there is no override and
+            // so nothing to repair: the real window is already coherent, and
+            // `Native` sends no bootstrap at all.
+            ProfileKind::Native if emulate_viewport => {
+                geometry_bootstrap_with(fingerprint.screen.as_ref())
+            }
+            ProfileKind::Native => String::new(),
             ProfileKind::Off => String::new(),
         };
         let geolocation = persona.geolocation;
@@ -192,24 +199,32 @@ impl TargetObserver for StealthObserver {
         // fingerprint's screen (persona's when it set one, else the
         // `StealthProfile::screen` pin) wins; neither set → the fixed
         // 1920x1080 default.
+        //
+        // The metrics override is skipped when viewport emulation is off
+        // (`StealthProfile::emulate_viewport`, auto-off for headful
+        // launches): a pinned viewport larger than the real window renders
+        // off its edge. Focus emulation is independent and always sent.
         if !frame {
-            let (screen_width, screen_height, device_scale_factor) = match self.fingerprint.screen {
-                Some(s) => (s.width, s.height, s.device_pixel_ratio),
-                None => (1920, 1080, 1.0),
-            };
-            session
-                .call(
-                    "Emulation.setDeviceMetricsOverride",
-                    json!({
-                        "width": screen_width,
-                        "height": screen_height,
-                        "deviceScaleFactor": device_scale_factor,
-                        "mobile": false,
-                        "screenWidth": screen_width,
-                        "screenHeight": screen_height,
-                    }),
-                )
-                .await?;
+            if self.profile.viewport_emulation_enabled() {
+                let (screen_width, screen_height, device_scale_factor) =
+                    match self.fingerprint.screen {
+                        Some(s) => (s.width, s.height, s.device_pixel_ratio),
+                        None => (1920, 1080, 1.0),
+                    };
+                session
+                    .call(
+                        "Emulation.setDeviceMetricsOverride",
+                        json!({
+                            "width": screen_width,
+                            "height": screen_height,
+                            "deviceScaleFactor": device_scale_factor,
+                            "mobile": false,
+                            "screenWidth": screen_width,
+                            "screenHeight": screen_height,
+                        }),
+                    )
+                    .await?;
+            }
 
             session
                 .call(
@@ -1466,6 +1481,83 @@ mod persona_reaches_cdp_tests {
             "const INNER_H = 640;",
             "the measured innerHeight must reach the geometry patch"
         );
+    }
+
+    /// Viewport emulation off (a headful launch): no metrics override, so the
+    /// page lays out at the real window size, and no `screen.js` repair, which
+    /// would otherwise report the emulated screen's `inner*`/`outer*` over the
+    /// real window's. Focus emulation is unrelated and still sent.
+    #[tokio::test]
+    async fn viewport_emulation_off_skips_metrics_and_geometry_for_spoofed() {
+        let frames = drive_attach(StealthObserver::with_persona(
+            StealthProfile::spoofed().emulate_viewport(false),
+            bare_fingerprint(),
+            Persona::default(),
+        ))
+        .await;
+
+        let methods = method_names(&frames);
+        assert!(
+            !methods
+                .iter()
+                .any(|m| m == "Emulation.setDeviceMetricsOverride"),
+            "viewport emulation off must not pin the viewport: {methods:?}"
+        );
+        assert!(
+            methods
+                .iter()
+                .any(|m| m == "Emulation.setFocusEmulationEnabled"),
+            "focus emulation is independent of the viewport: {methods:?}"
+        );
+        let source = params(&frames, "Page.addScriptToEvaluateOnNewDocument")["source"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            line_with(&source, "const CHROME_H"),
+            "<no such line>",
+            "the geometry patch must not ship without the override it repairs"
+        );
+    }
+
+    /// `Native`'s bootstrap is nothing but the geometry repair, so with the
+    /// viewport left alone it sends no bootstrap at all.
+    #[tokio::test]
+    async fn viewport_emulation_off_sends_native_no_bootstrap() {
+        let frames = drive_attach(StealthObserver::new(
+            StealthProfile::native().emulate_viewport(false),
+            bare_fingerprint(),
+        ))
+        .await;
+
+        let methods = method_names(&frames);
+        assert!(
+            !methods
+                .iter()
+                .any(|m| m == "Emulation.setDeviceMetricsOverride"
+                    || m == "Page.addScriptToEvaluateOnNewDocument"),
+            "native with viewport emulation off sends neither: {methods:?}"
+        );
+    }
+
+    /// Auto (unset) keeps the historical behavior: the default 1920x1080 pin
+    /// and the geometry patch alongside it.
+    #[tokio::test]
+    async fn viewport_emulation_auto_keeps_the_pinned_viewport() {
+        let frames = drive_attach(StealthObserver::new(
+            StealthProfile::native(),
+            bare_fingerprint(),
+        ))
+        .await;
+
+        let metrics = params(&frames, "Emulation.setDeviceMetricsOverride");
+        assert_eq!(metrics["width"].as_u64(), Some(1920));
+        assert_eq!(metrics["height"].as_u64(), Some(1080));
+        let source = params(&frames, "Page.addScriptToEvaluateOnNewDocument")["source"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(line_with(&source, "const CHROME_H"), "const CHROME_H = 86;");
     }
 
     /// Precedence guard rather than a regression: the persona already won for

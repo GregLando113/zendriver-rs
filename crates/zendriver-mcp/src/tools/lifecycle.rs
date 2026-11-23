@@ -40,6 +40,15 @@ pub struct OpenInput {
     #[serde(default)]
     #[schemars(with = "GpuBackendSchema")]
     pub gpu_backend: zendriver::GpuBackend,
+    /// Pin the page viewport to the stealth profile's screen (1920x1080
+    /// unless a persona supplies one) via `Emulation.setDeviceMetricsOverride`.
+    /// When unset (the default) this is automatic: pinned when `headless`,
+    /// not pinned when headful, so a visible window lays out at its real size
+    /// instead of rendering past its edge (e.g. in a tiled window). Pass
+    /// `true` to force the pinned viewport in a headful window, or `false` to
+    /// use Chrome's own window size even when headless.
+    #[serde(default)]
+    pub emulate_viewport: Option<bool>,
     /// Override the session's default stealth profile for this launch.
     /// When `None`, the session-wide default (set via CLI / construct time)
     /// is used.
@@ -211,7 +220,10 @@ pub async fn open(
         return Err(map_error(McpServerError::BrowserAlreadyOpen));
     }
     let profile = input.stealth_profile.unwrap_or(s.stealth_profile_choice);
-    let stealth = apply_overrides(stealth_profile_for(profile), &s.stealth_overrides);
+    let mut stealth = apply_overrides(stealth_profile_for(profile), &s.stealth_overrides);
+    if let Some(on) = input.emulate_viewport {
+        stealth = stealth.emulate_viewport(on);
+    }
     let mut builder = Browser::builder()
         .headless(input.headless)
         .gpu_backend(input.gpu_backend)

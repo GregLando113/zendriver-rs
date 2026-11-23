@@ -1059,3 +1059,14 @@ excluded = "geometry carried by ClickTarget into the on_click callback; callback
 [[entry]]
 api = "zendriver::CloudflareBypass::on_click"
 excluded = "callback API; no request/response tool shape"
+
+# ── Viewport emulation follows the launch mode (headful = real window) ─────
+# `StealthProfile::emulate_viewport` / `viewport_emulation` /
+# `viewport_emulation_enabled` live in the `zendriver-stealth` crate's own
+# public API, not `zendriver`'s (same rationale as `native_isolation` above):
+# no `zendriver`-crate-rooted item changed — `BrowserBuilder::launch` only
+# resolves the profile's auto setting against `headless` via a private
+# helper. Recorded here for the MCP surface that exposes it.
+[[entry]]
+api = "zendriver_mcp::tools::lifecycle::OpenInput::emulate_viewport"
+covered = "browser_open.emulate_viewport -> StealthProfile::emulate_viewport (unset = auto: pinned headless, real window size headful)"

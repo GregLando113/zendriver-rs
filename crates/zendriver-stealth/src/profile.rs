@@ -89,6 +89,12 @@ pub struct StealthProfile {
     /// render-process site-isolation launch flags. See
     /// [`native_webgl`](Self::native_webgl) for the caller-facing setter.
     pub(crate) native_webgl: bool,
+    /// Whether the observer pins the page viewport with
+    /// `Emulation.setDeviceMetricsOverride` (plus the `screen.js` geometry
+    /// repair that accompanies it). `None` = auto: on, unless
+    /// `BrowserBuilder` resolves it off for a headful launch. See
+    /// [`emulate_viewport`](Self::emulate_viewport).
+    pub(crate) emulate_viewport: Option<bool>,
     /// GPU backend for the launch flags. Defaults to
     /// [`GpuBackend::Disabled`] — today's behavior. `BrowserBuilder` overrides
     /// this at launch when its own `gpu_backend` was set.
@@ -120,6 +126,7 @@ impl StealthProfile {
             bypass_csp: false,
             native_isolation: false,
             native_webgl: false,
+            emulate_viewport: None,
             gpu_backend: crate::GpuBackend::Disabled,
             user_data_dir: None,
         }
@@ -145,6 +152,7 @@ impl StealthProfile {
             bypass_csp: false,
             native_isolation: false,
             native_webgl: false,
+            emulate_viewport: None,
             gpu_backend: crate::GpuBackend::Disabled,
             user_data_dir: None,
         }
@@ -171,6 +179,7 @@ impl StealthProfile {
             bypass_csp: true, // default ON for spoofed; see spec assumption #2
             native_isolation: false,
             native_webgl: false,
+            emulate_viewport: None,
             gpu_backend: crate::GpuBackend::Disabled,
             user_data_dir: None,
         }
@@ -402,6 +411,36 @@ impl StealthProfile {
         self
     }
 
+    /// Pin (or stop pinning) the page viewport to the profile's screen.
+    ///
+    /// When on, every page gets `Emulation.setDeviceMetricsOverride` sized to
+    /// the configured [`screen`](Self::screen) (1920x1080 by default), plus
+    /// the JS geometry repair that keeps `outer*`/`avail*` coherent with it.
+    /// That is what keeps headless Chrome from exposing its odd default
+    /// window size.
+    ///
+    /// When off, neither is sent: the page lays out at the real OS window's
+    /// size and reports the real window/screen geometry. This is what a
+    /// **headful** launch wants — a pinned 1920px viewport inside a smaller
+    /// (e.g. tiled) window renders off the edge of the window.
+    ///
+    /// Unset (the default) means *auto*: `zendriver`'s `BrowserBuilder`
+    /// turns it off for headful launches (`headless(false)`) and leaves it
+    /// on otherwise. Set it explicitly to force either behavior.
+    ///
+    /// ```
+    /// use zendriver_stealth::StealthProfile;
+    /// assert_eq!(StealthProfile::native().viewport_emulation(), None);
+    /// let p = StealthProfile::native().emulate_viewport(false);
+    /// assert_eq!(p.viewport_emulation(), Some(false));
+    /// assert!(!p.viewport_emulation_enabled());
+    /// ```
+    #[must_use]
+    pub fn emulate_viewport(mut self, on: bool) -> Self {
+        self.emulate_viewport = Some(on);
+        self
+    }
+
     /// Select the GPU backend Chrome renders WebGL / WebGPU with.
     ///
     /// Defaults to [`GpuBackend::Disabled`](crate::GpuBackend::Disabled),
@@ -581,6 +620,21 @@ impl StealthProfile {
     #[must_use]
     pub fn native_webgl_enabled(&self) -> bool {
         self.native_webgl
+    }
+
+    /// The explicit [`emulate_viewport`](Self::emulate_viewport) setting, or
+    /// `None` when left on auto.
+    #[must_use]
+    pub fn viewport_emulation(&self) -> Option<bool> {
+        self.emulate_viewport
+    }
+
+    /// Whether the observer will pin the viewport for this profile: the
+    /// explicit setting, else `true` (auto resolves to on when nothing —
+    /// such as a headful `BrowserBuilder` launch — turned it off).
+    #[must_use]
+    pub fn viewport_emulation_enabled(&self) -> bool {
+        self.emulate_viewport.unwrap_or(true)
     }
 
     /// The GPU backend selected on this profile

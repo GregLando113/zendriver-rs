@@ -165,6 +165,11 @@ present in the schema but only takes effect when the `geo` feature is enabled.
   setting. Wraps `zendriver::stealth::InputProfile` via
   `BrowserBuilder::input_profile`; the output `input_profile` field always
   echoes the *resolved* value, not the raw request.
+- `emulate_viewport: bool` — pin the page viewport to the stealth profile's
+  screen (1920x1080 unless a persona supplies one). Unset means auto: pinned
+  when `headless`, not pinned when headful, so a visible window (for example
+  one tiled by the window manager) lays out at its real size instead of
+  rendering past its edge. Maps to `StealthProfile::emulate_viewport`.
 - `gpu_backend: "disabled" | "swift_shader" | "native"` — select the GPU
   backend Chrome renders WebGL/WebGPU with (default: `"disabled"`, today's
   historical flags). `"swift_shader"` forces ANGLE's software rasterizer

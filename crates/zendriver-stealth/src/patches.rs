@@ -70,7 +70,7 @@ const MOUSE: &str = include_str!("patches/mouse.js");
 /// last), then the PRNG definition, then each persona surface.
 #[must_use]
 pub fn bootstrap_script(persona: &Persona, identity: &Fingerprint) -> String {
-    bootstrap_script_impl(persona, identity, true)
+    bootstrap_script_impl(persona, identity, true, true)
 }
 
 /// Like [`bootstrap_script`], but omits the WebGL value-substitution patch
@@ -92,7 +92,24 @@ pub fn bootstrap_script(persona: &Persona, identity: &Fingerprint) -> String {
 /// for the caller-facing trade-off this backs.
 #[must_use]
 pub fn bootstrap_script_native_webgl(persona: &Persona, identity: &Fingerprint) -> String {
-    bootstrap_script_impl(persona, identity, false)
+    bootstrap_script_impl(persona, identity, false, true)
+}
+
+/// The observer's entry point: [`bootstrap_script`] /
+/// [`bootstrap_script_native_webgl`] with the geometry repair made optional.
+///
+/// `geometry` must track whether `Emulation.setDeviceMetricsOverride` is
+/// sent. `screen.js` repairs the artifacts that override leaves behind and
+/// reports `inner*`/`outer*` from the emulated screen; with no override (a
+/// headful window laid out at its real size) it would instead report a
+/// window size the page is not actually rendered at.
+pub(crate) fn bootstrap_script_for(
+    persona: &Persona,
+    identity: &Fingerprint,
+    spoof_webgl: bool,
+    geometry: bool,
+) -> String {
+    bootstrap_script_impl(persona, identity, spoof_webgl, geometry)
 }
 
 /// Geometry-coherence bootstrap for profiles that apply NO identity spoofing.
@@ -156,7 +173,12 @@ pub fn geometry_bootstrap_with(screen: Option<&crate::persona::specs::ScreenSpec
 /// *value* spoof (which is skipped whenever WebGL is left real, so the two
 /// APIs stay coherent — see [`push_webgpu`]); every other patch is identical
 /// between the two public entry points.
-fn bootstrap_script_impl(persona: &Persona, identity: &Fingerprint, spoof_webgl: bool) -> String {
+fn bootstrap_script_impl(
+    persona: &Persona,
+    identity: &Fingerprint,
+    spoof_webgl: bool,
+    geometry: bool,
+) -> String {
     // Prelude first: installs the toString override + closure-local helpers
     // that every patch below routes through.
     let mut body = String::from(NATIVE);
@@ -178,10 +200,16 @@ fn bootstrap_script_impl(persona: &Persona, identity: &Fingerprint, spoof_webgl:
     // sizes. `StealthObserver::with_persona` has already merged the two, which
     // makes this a no-op there; it still matters for a caller driving the
     // public `bootstrap_script` with an unmerged pair.
-    body.push('\n');
-    body.push_str(&screen_patch(
-        persona.screen.as_ref().or(identity.screen.as_ref()),
-    ));
+    //
+    // Skipped when the observer is not pinning the viewport (headful): the
+    // real window geometry is already coherent, and this patch would replace
+    // it with the emulated screen's.
+    if geometry {
+        body.push('\n');
+        body.push_str(&screen_patch(
+            persona.screen.as_ref().or(identity.screen.as_ref()),
+        ));
+    }
     // Synthetic pointer entropy, also unconditional.
     body.push('\n');
     body.push_str(MOUSE);

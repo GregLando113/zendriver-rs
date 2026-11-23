@@ -179,6 +179,43 @@ let browser = Browser::builder()
 `platform()` + `chrome_version()` unless you need a bit-for-bit
 specific UA.
 
+## Viewport emulation and headful windows (`emulate_viewport`)
+
+`native()` and `spoofed()` pin every page's viewport with
+`Emulation.setDeviceMetricsOverride`: 1920x1080 by default, or the
+`.screen(...)` / persona screen when one is set. They also inject a small
+geometry patch that keeps `outerWidth` / `screen.availHeight` coherent with
+the pinned size. Headless Chrome needs this to avoid exposing its odd
+default window.
+
+A **headful** window is different. Its size is decided by the window
+manager (a tiling compositor such as Hyprland or i3, a half-screen snap),
+and a pinned 1920px viewport inside a 1146px-wide window lays out past the
+window's right edge. So the setting defaults to *auto*:
+`BrowserBuilder::launch` keeps the pin for `headless(true)` and drops it
+(along with the geometry patch) for `headless(false)`, letting the page
+lay out at the real window size and report the real window geometry.
+
+Set it explicitly to override auto in either direction:
+
+```rust,no_run
+use zendriver::Browser;
+use zendriver::stealth::StealthProfile;
+
+# async fn ex() -> zendriver::Result<()> {
+// Headful, but keep the pinned 1920x1080 viewport anyway.
+let browser = Browser::builder()
+    .headless(false)
+    .stealth(StealthProfile::native().emulate_viewport(true))
+    .launch()
+    .await?;
+# Ok(()) }
+```
+
+`BrowserBuilder::connect` attaches to a browser it did not launch and so
+cannot tell whether it is headful; there, auto keeps the pin. Pass
+`.emulate_viewport(false)` when connecting to a visible browser.
+
 ## Opting into real site isolation + real WebGL (`native_isolation`)
 
 `native()` and `spoofed()` both disable Chrome's render-process site
